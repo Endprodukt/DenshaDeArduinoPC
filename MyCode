@@ -40,6 +40,8 @@
 #define BREAK13 0x2000
 #define BREAK14 0x0
 
+const byte delayTime = 20;
+
 Psx Psx;
 unsigned int psxdata = 0;                                    // data stores the controller response
 unsigned int psxold = 0;
