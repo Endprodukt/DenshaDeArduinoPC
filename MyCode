@@ -1,0 +1,71 @@
+#include <Psx.h>
+ 
+#include <Keyboard.h>
+
+//PSX Pins
+#define dataPin 2
+#define cmndPin 3
+#define attPin 4
+#define clockPin 5
+
+//PSX DenshaDeGo controller button masks
+#define MASK_SPEED  0x080F
+#define MASK_BREAK  0xF000
+#define MASK_SELECT 0x80
+#define MASK_START  0x10
+#define MASK_A      0x100
+#define MASK_B      0x200
+#define MASK_C      0x400
+
+#define SPEED_0  0xF
+#define SPEED_1  0x80E
+#define SPEED_2  0xE
+#define SPEED_3  0x80B
+#define SPEED_4  0xB
+#define SPEED_5  0x80A
+
+#define BREAK0 0xD000
+#define BREAK1 0x7000
+#define BREAK2 0x5000
+#define BREAK3 0xE000
+#define BREAK4 0xC000
+#define BREAK5 0x6000
+#define BREAK6 0x4000
+#define BREAK7 0xB000
+#define BREAK8 0x9000
+#define BREAK9 0x3000
+#define BREAK10 0x1000
+#define BREAK11 0xA000
+#define BREAK12 0x8000
+#define BREAK13 0x2000
+#define BREAK14 0x0
+
+Psx Psx;
+unsigned int psxdata = 0;                                    // data stores the controller response
+unsigned int psxold = 0;
+
+void setup() {
+   Serial.begin(9600);
+   Psx.setupPins(dataPin, cmndPin, attPin, clockPin, 5); 
+   Keyboard.begin();
+}
+
+void loop() {
+    psxdata = Psx.read();
+    if (psxdata & MASK_SELECT)
+    Keyboard.print(KEY_ESC);
+    else Keyboard.release(KEY_ESC);
+    if (psxdata & MASK_START)
+    Keyboard.print(KEY_RETURN);
+    else Keyboard.release(KEY_RETURN);
+    if (psxdata & MASK_A)
+    Keyboard.print(KEY_ESC);   
+    else Keyboard.release(KEY_ESC);                                                                                                                                
+    if (psxdata & MASK_B)
+    Keyboard.print(KEY_RETURN);
+    else Keyboard.release(KEY_RETURN);
+    if (psxdata & MASK_C)
+    Keyboard.press(32); //Space 
+    delay (30);
+    Keyboard.release(32); 
+}    
