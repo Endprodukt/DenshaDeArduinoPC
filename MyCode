@@ -65,7 +65,13 @@ void loop() {
     Keyboard.print(KEY_RETURN);
     else Keyboard.release(KEY_RETURN);
     if (psxdata & MASK_C)
-    Keyboard.press(32); //Space 
-    delay (30);
-    Keyboard.release(32); 
+    buttonSend(32);
+    //Keyboard.press(32); //Space 
+    //delay (30);
+    //Keyboard.release(32); 
 }    
+void buttonSend(int b){
+ Keyboard.press(b);
+ delay(delayTime);
+ Keyboard.release(b);
+ } 
