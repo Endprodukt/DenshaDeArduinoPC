@@ -1,0 +1,405 @@
+ /*
+Arduino De Go! PRO
+by Barito
+ 
+ Interfaces a Densha De Go Arcade control panel with a PC to play 
+ Densha De Go! series. 
+ Densha De Go Arcade main controls: a left throttle made of 6 OPTO switches 
+ (Omron SX4009-P1, max 16mA @28Vdc) + a right (0-8 + Emergency) 10 (non linear)
+ positions handbrake made of a 5K Ohm potentiometer. The Horn pedal is OPTO too,
+ but NC (normally closed).
+ 
+ NOTA OPTO SWITCH: basta alimentarlo con i 5V, GND e il segnale mandarlo al pin ingresso
+ dell' arduino. Quando l'opto è aperto (non interrotto) porta a massa il pin (LOW) come 
+ farebbe un tasto.
+ 
+ NOTA LAMPADE: sono tutte 12V.
+ 
+ pinout connettori più vicini alle utenze
+ (guardando il lato opposto ai cavi)
+ 
+ E |GND|  |
+   |   |  |    massa MAIN
+     ----
+ 
+ H |+5V|segnale|GND|    potenziometro freno
+        -----
+ 
+ K |Eo |Fo|+5V|GND |   |
+   |-cP|Ao|Bo |Co  |Do |  -cP=negativo contachilometri e pressostato
+   |H  |H |H  |+cKM|+Pr|  H=connettore H (potenziometro freno)
+           ------           +cKM=+ contachilometri, +Pr=+ pressostato
+ 
+ L |+partenza/GO LAMP|norm LAMP| EM LAMP  | 123 LAMP |
+   |   Start BUTTON  |   GND   |start LAMP|COM12 LAMP|
+                         --------
+ 
+ N3 |GND|segnale|+5V|  HORN
+         -------
+ 
+ Sequenza OPTO: (A-0,) D-1, B-2, E-3, C-4, F-5
+ 
+ modalità: 
+ mode 0: in questa modalità il tasto di marcia viene mantenuto premuto 
+ e definisce la marcia corrente. In Densha De Go! e Densha De Go! 2 Kosoku-hen 3000 è la terza opzione 
+ controller nelle opzioni in-game.
+ throttle: numeri da 1 a 5 (nulla permuto fa marcia neutra); freno: tastierino numerico 
+ da 0 a 9 (0-8 + E); horn: barra spaziatrice; INVIO
+ Senza modificare l'ID del microcontrollore (arduino) questa modalità è selezionabile solo
+ con Densha De Go! 2 Kosoku-hen 3000 e precedenti.
+ mode 1 (default): in questa modalità freno e acceleratore sono gestiti separatamente,
+ l'uno con le frecce direzionali dx-sx, l'altro con frecce su-giù; horn: barra spaziatrice; INVIO; ESC*/
+
+//LIBRERIE
+#include <Keyboard.h>
+
+//DEFINIZIONI
+#define KEY_RIGHT 215
+#define KEY_LEFT 216
+#define KEY_DOWN 217
+#define KEY_UP 218
+
+#define GEN_INPUT 2
+#define GEN_OUTPUT 7
+
+struct genInput {const byte pin; boolean state; long dbTime; int key;}
+genInput[GEN_INPUT] = {
+{14,  HIGH, 0, 176}, //INVIO
+{15,  HIGH, 0, 180}, //space - Horn
+};
+
+struct genOutput {const byte pin; boolean state;}
+genOutput[GEN_OUTPUT] = {
+{16,  HIGH}, //Start Lamp
+{A2,  HIGH}, //"123" Lamp
+{A0,  HIGH}, //lampada di partenza
+{6,  HIGH}, //lampada di emergenza
+{A3,  HIGH}, //lampada di fianco a emergenza (normal lamp)
+{10,  HIGH}, //conta Km
+{9,  HIGH}, //pressostato
+};
+
+struct throttle {const byte pin; boolean state; long dbTime;}
+throttle[6] = {
+//nulla premuto (A) fa marcia neutra
+{8,  HIGH, 0}, //A
+{4,  HIGH, 0}, //D
+{2,  HIGH, 0}, //B
+{5,  HIGH, 0}, //E
+{3,  HIGH, 0}, //C
+{7,  HIGH, 0}, //F
+};
+
+/* i valori indicati sono relativi alle posizioni DI 
+ MEZZO tra blocchi freno*/
+struct brake {const int potPos; boolean state; boolean prevState;}
+brake[9] = {
+{296, LOW, LOW}, //278 = BRzero + (BRuno-BRzero)/2
+{330, LOW, LOW}, //313
+{362, LOW, LOW}, //346
+{395, LOW, LOW}, //378
+{429, LOW, LOW}, //411
+{463, LOW, LOW}, //446
+{497, LOW, LOW}, //479
+{531, LOW, LOW}, //514
+{790, LOW, LOW}, 
+//{565, LOW, LOW}, //548
+//{790, LOW, LOW}, //828 EMERGENZA
+};
+
+//COSTANTI
+const byte delayTime = 20;
+
+//VARIABILI
+int brakePosition;
+int gear = 0;
+boolean IniSw = 0;
+long blinkTime = 0;
+long KMtime=0;
+long ThTime=0;
+long PrTime=0;
+long BrTime=0;
+boolean lampState;
+int KMdelay=0;
+int maxKMval=0;
+int CurrentKMval=0;
+int accelDelta=0;
+int Bval=0;
+int CurrentPressureVal=0;
+int maxPressureVal=0;
+int PrDelay;
+byte Tcount=0;
+byte Bcount=0;
+
+void setup() // the setup routine runs once when you press reset:
+{
+  
+  Keyboard.begin();
+
+  for (int j = 0; j < 6; j++){
+  pinMode(throttle[j].pin, INPUT_PULLUP);
+  throttle[j].state = digitalRead(throttle[j].pin);
+  throttle[j].dbTime = millis();}  // chiudo "for"
+  
+  for (int j = 0; j < GEN_INPUT; j++){
+  pinMode(genInput[j].pin, INPUT_PULLUP);
+  genInput[j].state = digitalRead(genInput[j].pin);
+  genInput[j].dbTime = millis();}  // chiudo "for"
+
+  for (int j = 0; j < GEN_OUTPUT-2; j++){
+  pinMode(genOutput[j].pin, OUTPUT);
+  digitalWrite(genOutput[j].pin, genOutput[j].state);}  // chiudo "for"
+  analogWrite(genOutput[5].pin,0);
+  analogWrite(genOutput[6].pin,0);
+  
+} //setup close
+
+void loop(){
+
+enter();
+
+if(IniSw==0){
+ //lampade lampeggianti pre-inizializzazione
+initializeLamps(); 
+}//IniSw==0 end
+
+//WHEN ACTIVE ...
+if(IniSw==1 ){
+brakeHandling();
+throttleHandling();
+hornPress();
+//speedoMeter();
+//pressureMeter();
+lampsManagement();
+} //iniSw==1 end
+} // loop end
+
+//FUNZIONI-------------------------------------------------
+
+void enter(){
+//we send "START/ENTER/INVIO" only by releasing the button
+if(millis()-genInput[0].dbTime > delayTime && digitalRead(genInput[0].pin) != genInput[0].state){
+ genInput[0].state = ! genInput[0].state;
+ genInput[0].dbTime = millis();
+  if (genInput[0].state==HIGH){
+    digitalWrite(genOutput[0].pin,LOW);//start lamp
+    if(IniSw==1){buttonSend(genInput[0].key);buttonSend(118);}// "enter" e "v" per cambio visuale
+    IniSw=1;}
+  else {digitalWrite(genOutput[0].pin,HIGH);}
+}
+}
+
+void brakeHandling(){
+// potentiometer, 10 positions: N/1-8/Emergency brake 
+brakePosition = analogRead(A1);
+for (int j = 0; j < 9; j++){
+  if (brakePosition > brake[j].potPos){
+    brake[j].state = HIGH;}
+  else {brake[j].state = LOW;}
+  if (brake[j].state != brake[j].prevState) {
+   brake[j].prevState = brake[j].state; 
+   if(brake[j].state == HIGH){buttonSend(KEY_RIGHT); Bval=Bval++;}
+   else if(brake[j].state == LOW){buttonSend(KEY_LEFT); Bval=Bval--;}
+   Bcount=0;
+   if(brake[8].state == HIGH){multipleSendB(KEY_RIGHT, 600); /*Bval=9*/}
+   else if(brake[1].state == LOW){multipleSendB(KEY_LEFT, 400); Bval=0;}
+}
+}//chiudo for
+}
+
+void throttleHandling(){
+for (int j = 0; j < 6; j++){
+  if (millis()-throttle[j].dbTime > delayTime && digitalRead(throttle[j].pin) !=  throttle[j].state){
+    throttle[j].state = !throttle[j].state;
+    throttle[j].dbTime = millis();
+      if (throttle[j].state == LOW){
+        if(j > gear){buttonSend(KEY_DOWN); gear++;}
+        else if(j < gear){buttonSend(KEY_UP);gear--;}
+        Tcount=0; 
+        if(gear = 5){multipleSendT(KEY_DOWN);}
+        else if(gear = 0){multipleSendT(KEY_UP);}
+    }
+} 
+} //chiudo for
+}
+
+void multipleSendB(int key, long t){
+//assicurazione posizioni limite e navigazione menu dx/sx
+if(millis()-BrTime>t && Bcount<8){ 
+    BrTime = millis();
+    Bcount++;
+    buttonSend(key);} 
+}
+
+void multipleSendT(int key){
+//assicurazione posizioni limite e NAVIGAZIONE MENU SU/GIU
+if(millis()-ThTime>600 && Tcount<5){
+    ThTime = millis();
+    Tcount++;
+    buttonSend(key);}
+}
+
+void speedoMeter(){
+maxKMval=gear*50;
+    //con freno a riposo...
+    if(Bval==0){
+      if (CurrentKMval<=maxKMval){
+        KMdelay=260+accelDelta;
+        if(millis()-KMtime>KMdelay){	
+          CurrentKMval++;//accelerazione
+          KMtime=millis();}
+      }
+      else if (CurrentKMval>maxKMval+1){
+        KMdelay=800; //lenta (decelerazione)
+        if(millis()-KMtime > KMdelay){	
+          CurrentKMval--;//decelerazione (lenta)
+          KMtime=millis();}
+      }
+    }
+    //se freno... (in GMode=1 frenando l'acceleratore va a riposo automaticamente)
+    if(Bval>0 && CurrentKMval>0) { 
+      KMdelay=550-Bval*60;//velocità di rallentamento funzione della posizione del freno
+      if(millis()-KMtime > KMdelay){	
+        CurrentKMval--;//rallentamento
+        KMtime=millis();}
+    }
+    analogWrite(genOutput[5].pin, CurrentKMval);
+}
+
+void pressureMeter(){
+PrDelay=200-Bval*21;
+maxPressureVal=50+Bval*20;
+if(Bval==0){
+ CurrentPressureVal=0;
+ maxPressureVal=0;}
+if(millis()-PrTime> PrDelay){
+ CurrentPressureVal++;
+ PrTime=millis();
+}
+if(CurrentPressureVal>=maxPressureVal){CurrentPressureVal=maxPressureVal;}
+if(CurrentKMval<=1){CurrentPressureVal=0;}
+ analogWrite(genOutput[6].pin, CurrentPressureVal);
+}  
+
+void hornPress(){
+ if (millis()-genInput[1].dbTime > delayTime && digitalRead(genInput[1].pin) !=  genInput[1].state){
+    genInput[1].state = !genInput[1].state;
+    genInput[1].dbTime = millis();
+      if (genInput[1].state == LOW && genInput[0].state == HIGH){Keyboard.press(genInput[1].key);}
+      else if (genInput[1].state == HIGH && genInput[0].state == LOW){Keyboard.press(177);CurrentKMval=0;}//ESC
+      else {Keyboard.release(genInput[1].key);Keyboard.release(177);}
+ }
+}
+
+void buttonSend(int b){
+ Keyboard.press(b);
+ delay(delayTime);
+ Keyboard.release(b);
+ } 
+
+void initializeLamps(){
+if(millis()-blinkTime>500){
+    lampState=!lampState;
+    for (int j = 0; j < GEN_OUTPUT-2; j++){
+    digitalWrite(genOutput[j].pin,lampState);}  // chiudo "for"
+    analogWrite(genOutput[5].pin,0);
+    analogWrite(genOutput[6].pin,0);
+    blinkTime=millis();}
+}
+
+void lampsManagement(){
+  digitalWrite(genOutput[1].pin, HIGH);
+  if(CurrentKMval>1){digitalWrite(genOutput[2].pin, HIGH);}//GO lamp (lampada di partenza
+  else{digitalWrite(genOutput[2].pin, LOW);}
+  //lampade freno (emergenza lampeggiante)
+  if(brakePosition > brake[8].potPos){lampBlink(genOutput[3].pin, 300);digitalWrite(genOutput[4].pin, LOW);}
+  else if (brakePosition < brake[0].potPos){digitalWrite(genOutput[4].pin, LOW);digitalWrite(genOutput[3].pin, LOW);}
+  else {digitalWrite(genOutput[4].pin, HIGH);digitalWrite(genOutput[3].pin, LOW);}
+}
+
+void lampBlink(int lampID, int lampBlinkdelay){
+  if(millis()-blinkTime>lampBlinkdelay){
+    lampState=!lampState;
+    digitalWrite(lampID, lampState); 
+    blinkTime=millis();}
+} 
+
+
+/*
+#define KEYPAD_0 234
+ #define KEYPAD_1 225
+ #define KEYPAD_2 226
+ #define KEYPAD_3 227
+ #define KEYPAD_4 228
+ #define KEYPAD_5 229
+ #define KEYPAD_6 230
+ #define KEYPAD_7 231
+ #define KEYPAD_8 232
+ #define KEYPAD_9 233
+ #define KEYPAD_ASTERIX 221
+ #define KEYPAD_ENTER 224
+ #define KEYPAD_MINUS 222
+ #define KEYPAD_PERIOD 235
+ #define KEYPAD_PLUS 223
+ #define KEYPAD_SLASH 220
+ #define KEY_BACKSLASH 185
+ #define KEY_BACKSPACE 178
+ #define KEY_CAPS_LOCK 193
+ #define KEY_COMMA 190
+ #define KEY_DELETE 212
+ #define KEY_DOWN 217
+ #define KEY_END 213
+ #define KEY_ENTER 176
+ #define KEY_EQUAL 182
+ #define KEY_ESC 177
+ 
+ #define KEY_F1 194
+ #define KEY_F2 195
+ #define KEY_F3 196
+ #define KEY_F4 197
+ #define KEY_F5 198
+ #define KEY_F6 199
+ #define KEY_F7 200
+ #define KEY_F8 201
+ #define KEY_F9 202
+ #define KEY_F10 203
+ #define KEY_F11 204
+ #define KEY_F12 205
+ #define KEY_F13 240
+ #define KEY_F14 241
+ #define KEY_F15 242
+ #define KEY_F16 243
+ #define KEY_F17 244
+ #define KEY_F18 245
+ #define KEY_F19 246
+ #define KEY_F20 247
+ #define KEY_F21 248
+ #define KEY_F22 249
+ #define KEY_F23 250
+ #define KEY_F24 251
+ 
+ #define KEY_HOME 210
+ #define KEY_INSERT 209
+ #define KEY_LEFT 216
+ #define KEY_LEFT_BRACE 183
+ #define KEY_MENU 237
+ #define KEY_MINUS 181
+ #define KEY_NON_US_NUM 186
+ #define KEY_NUM_LOCK 219
+ #define KEY_PAGE_DOWN 214
+ #define KEY_PAGE_UP 211
+ #define KEY_PAUSE 208
+ #define KEY_PERIOD 191
+ #define KEY_PRINTSCREEN 206
+ #define KEY_QUOTE 188
+ #define KEY_RIGHT 215
+ #define KEY_RIGHT_BRACE 184
+ #define KEY_SCROLL_LOCK 207
+ #define KEY_SEMICOLON 187
+ #define KEY_SLASH 192
+ #define KEY_SPACE 180
+ #define KEY_TAB 179
+ #define KEY_TILDE 189
+ #define KEY_UP 218
+ */
+
